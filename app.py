@@ -343,6 +343,23 @@ def main():
     )
     
     st.sidebar.markdown("---")
+    st.sidebar.header("🛡️ 账户设置")
+    is_free_five = st.sidebar.checkbox(
+        "账户已免五",
+        value=True,
+        help="免五是指免除交易佣金最低 5 元的限制。如果未免五，每笔申购/卖出最低收取 5 元手续费。"
+    )
+    
+    invest_amount = st.sidebar.number_input(
+        "计划申购金额 (元)",
+        min_value=100,
+        max_value=1000000,
+        value=100,
+        step=100,
+        help="用于计算扣除手续费后的实际利润"
+    )
+    
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 💡 使用说明")
     st.sidebar.markdown("⚠️ **注意**：由于无法获取真实的申购状态和限额，所以移除了这些字段。🍗 鸡腿机会只根据溢价率判断。")
     
@@ -350,21 +367,40 @@ def main():
     col1, col2 = st.columns([1, 5])
     with col1:
         if st.button("🔄 刷新数据", width="stretch"):
+            # 清除缓存，强制重新获取
+            if 'lof_data' in st.session_state:
+                del st.session_state['lof_data']
             st.rerun()
     
-    # 获取数据
-    with st.spinner("正在获取 LOF 基金数据..."):
-        df = get_lof_data()
+    # 获取数据 (优先使用缓存)
+    if 'lof_data' not in st.session_state:
+        with st.spinner("正在获取 LOF 基金数据..."):
+            df_raw = get_lof_data()
+        if df_raw is not None and len(df_raw) > 0:
+            st.session_state['lof_data'] = df_raw
     
-    if df is None or len(df) == 0:
+    if 'lof_data' not in st.session_state or st.session_state['lof_data'] is None:
         st.error("❌ 无法获取数据，请检查网络连接或稍后重试")
         return
+    
+    # 使用缓存的原始数据进行计算
+    df = st.session_state['lof_data'].copy()
     
     # 计算溢价率
     df = calculate_premium_rate(df)
     
+    # 风险提示 (如果不免五)
+    if not is_free_five:
+        st.warning(f"⚠️ **风险提示**：您的账户**未免五**。系统已自动在套利计算中扣除 **5 元**最低手续费，请确保单笔申购金额 {invest_amount} 元能覆盖成本。")
+    
     # 筛选机会
     filtered_df = filter_opportunities(df, min_premium, min_turnover)
+    
+    # 计算预估利润
+    fee = 0 if is_free_five else 5
+    profit_col_name = '预估利润' if is_free_five else '预估利润(扣5元)'
+    filtered_df[profit_col_name] = (invest_amount * filtered_df['溢价率(%)'] / 100 - fee).round(2)
+    df[profit_col_name] = (invest_amount * df['溢价率(%)'] / 100 - fee).round(2)
     
     # 按溢价率降序排序
     filtered_df = filtered_df.sort_values('溢价率(%)', ascending=False)
@@ -405,9 +441,9 @@ def main():
             styled_df = filtered_df.style.apply(highlight_premium_level, axis=1)
             
             # 格式化特定列的显示
-            styled_df = styled_df.format({
-                '场内成交额': format_turnover
-            })
+            format_dict = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
+            
+            styled_df = styled_df.format(format_dict)
             
             # 显示表格
             st.dataframe(
@@ -444,9 +480,9 @@ def main():
         styled_all_df = df_sorted.style.apply(highlight_premium_level, axis=1)
         
         # 格式化显示
-        styled_all_df = styled_all_df.format({
-            '场内成交额': format_turnover
-        })
+        format_dict_all = {'场内成交额': format_turnover, profit_col_name: "￥{:.2f}"}
+        
+        styled_all_df = styled_all_df.format(format_dict_all)
         
         # 显示全量表格
         st.dataframe(
