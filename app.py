@@ -58,11 +58,20 @@ def save_nav_cache(cache_date, nav_dict):
     """保存净值缓存到文件"""
     cache_file = os.path.join(CACHE_DIR, f"nav_cache_{cache_date}.json")
     try:
+        # 确保所有值都可以被JSON序列化（转换日期为字符串）
+        serializable_dict = {}
+        for code, data in nav_dict.items():
+            serializable_dict[code] = {
+                '基金代码': str(data['基金代码']),
+                '基金净值': float(data['基金净值']),
+                '净值日期': str(data['净值日期'])  # 确保日期是字符串
+            }
+        
         with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(nav_dict, f, ensure_ascii=False, indent=2)
-        logger.info(f"✅ 缓存已保存: {cache_file}，共 {len(nav_dict)} 条数据")
+            json.dump(serializable_dict, f, ensure_ascii=False, indent=2)
+        logger.info(f"✅ 缓存已保存: {cache_file}，共 {len(serializable_dict)} 条数据")
     except Exception as e:
-        logger.error(f"❌ 缓存保存失败: {str(e)}")
+        logger.error(f"❌ 缓存保存失败: {str(e)}", exc_info=True)
 
 
 def fetch_single_nav(fund_code, start_date, end_date):
