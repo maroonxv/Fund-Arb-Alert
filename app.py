@@ -240,19 +240,6 @@ def get_lof_data():
         # 添加辅助字段
         df['实时估值'] = df['基金净值']
         
-        # 模拟申购状态和限额
-        df['申购状态'] = np.random.choice(
-            ['开放申购', '限制大额申购', '暂停申购'],
-            size=len(df),
-            p=[0.5, 0.3, 0.2]
-        )
-        df['单日限额'] = df.apply(
-            lambda x: np.random.choice([100, 500, 1000, 2000, 5000, 10000, 50000, None])
-            if x['申购状态'] == '限制大额申购' else (None if x['申购状态'] == '开放申购' else 0),
-            axis=1
-        )
-        logger.warning("⚠️ 申购状态、单日限额为模拟数据（随机生成）")
-        
         # 数据清洗
         before_clean = len(df)
         df = df.dropna(subset=['场内价格', '基金净值', '场内成交额'])
@@ -263,7 +250,7 @@ def get_lof_data():
         if before_clean > after_clean:
             logger.warning(f"⚠️ 清理无效数据: {before_clean - after_clean} 条")
         
-        result_df = df[['基金代码', '基金名称', '场内价格', '基金净值', '实时估值', '申购状态', '单日限额', '场内成交额']]
+        result_df = df[['基金代码', '基金名称', '场内价格', '基金净值', '实时估值', '场内成交额']]
         
         logger.info(f"✅ 数据处理完成，最终返回 {len(result_df)} 条有效数据")
         logger.info(f"\n📊 最终数据前 5 条:\n{result_df.head().to_string()}")
@@ -288,39 +275,27 @@ def calculate_premium_rate(df):
 
 def filter_opportunities(df, min_premium, min_turnover):
     """筛选套利机会"""
-    # 过滤条件
+    # 过滤条件（移除申购状态条件，因为是模拟数据）
     filtered = df[
         (df['溢价率(%)'] > min_premium) &
-        (df['申购状态'].isin(['开放申购', '限制大额申购'])) &
         (df['场内成交额'] > min_turnover)
     ].copy()
     
     return filtered
 
 
-def highlight_chicken_leg(row):
-    """高亮显示"鸡腿"机会"""
-    # 判断是否为鸡腿机会：限购100-2000元，溢价率>2%
-    is_chicken_leg = False
+def highlight_premium_level(row):
+    """根据溢价率高亮显示"""
+    premium = row['溢价率(%)']
     
-    if pd.notna(row['单日限额']) and row['单日限额'] > 0:
-        if 100 <= row['单日限额'] <= 2000 and row['溢价率(%)'] > 2.0:
-            is_chicken_leg = True
-    
-    if is_chicken_leg:
-        return ['background-color: #ffcccc; font-weight: bold'] * len(row)
+    if premium >= 5.0:
+        # 高溢价：红色高亮（鸡腿机会）
+        return ['background-color: #ffcccc; font-weight: bold; color: #d32f2f'] * len(row)
+    elif premium >= 2.0:
+        # 中等溢价：黄色高亮
+        return ['background-color: #fff9c4; font-weight: bold; color: #f57c00'] * len(row)
     else:
         return [''] * len(row)
-
-
-def format_limit(value):
-    """格式化限额显示"""
-    if pd.isna(value) or value is None:
-        return "无限额"
-    elif value == 0:
-        return "已暂停"
-    else:
-        return f"{int(value):,} 元"
 
 
 def format_turnover(value):
@@ -367,31 +342,9 @@ def main():
         help="过滤流动性较差的品种"
     )
     
-    chicken_leg_min_premium = st.sidebar.number_input(
-        "鸡腿机会溢价率阈值 (%)",
-        min_value=0.0,
-        max_value=10.0,
-        value=2.0,
-        step=0.1,
-        help="高亮显示的溢价率阈值"
-    )
-    
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💡 使用说明")
-    st.sidebar.info(
-        """
-        **鸡腿机会标准：**
-        - 单日限购：100-2000元
-        - 溢价率 > 2%
-        - 红色高亮显示
-        
-        **套利逻辑：**
-        1. 场外申购（按净值）
-        2. T+2 确认份额
-        3. 场内卖出（按溢价价格）
-        4. 赚取溢价差
-        """
-    )
+    st.sidebar.markdown("⚠️ **注意**：由于无法获取真实的申购状态和限额，所以移除了这些字段。🍗 鸡腿机会只根据溢价率判断。")
     
     # 刷新按钮
     col1, col2 = st.columns([1, 5])
@@ -427,13 +380,9 @@ def main():
         st.metric("符合条件", len(filtered_df))
     
     with col3:
-        # 统计鸡腿机会
-        chicken_leg_count = 0
-        for _, row in filtered_df.iterrows():
-            if pd.notna(row['单日限额']) and row['单日限额'] > 0:
-                if 100 <= row['单日限额'] <= 2000 and row['溢价率(%)'] > chicken_leg_min_premium:
-                    chicken_leg_count += 1
-        st.metric("🍗 鸡腿机会", chicken_leg_count, delta="高亮显示")
+        # 统计鸡腿机会（溢价率 >= 5%）
+        chicken_leg_count = len(filtered_df[filtered_df['溢价率(%)'] >= 5.0])
+        st.metric("🍗 鸡腿机会", chicken_leg_count, delta="溢价≥5%")
     
     with col4:
         if len(filtered_df) > 0:
@@ -450,14 +399,13 @@ def main():
     with tab1:
         # 显示筛选后的数据表格
         if len(filtered_df) > 0:
-            st.markdown("**红色高亮** = 🍗 鸡腿机会（限购100-2000元 且 溢价率>2%）")
+            st.markdown("🟥 **红色** = 高溢价(≥5%) | 🟡 **黄色** = 中等溢价(2-5%)")
             
-            # 先对原始数据应用高亮样式（在格式化之前）
-            styled_df = filtered_df.style.apply(highlight_chicken_leg, axis=1)
+            # 对数据应用溢价率分级高亮
+            styled_df = filtered_df.style.apply(highlight_premium_level, axis=1)
             
-            # 然后格式化特定列的显示
+            # 格式化特定列的显示
             styled_df = styled_df.format({
-                '单日限额': format_limit,
                 '场内成交额': format_turnover
             })
             
@@ -487,13 +435,16 @@ def main():
         # 显示全量数据
         st.markdown(f"**全量数据** - 共 {len(df)} 只 LOF 基金")
         st.info("💡 此列表显示所有已获取净值的 LOF 基金，按溢价率降序排列")
+        st.markdown("🟥 **红色** = 高溢价(≥55%) | 🟡 **黄色** = 中等溢价(2-5%)")
         
         # 对全量数据也按溢价率排序
         df_sorted = df.sort_values('溢价率(%)', ascending=False)
         
+        # 应用高亮
+        styled_all_df = df_sorted.style.apply(highlight_premium_level, axis=1)
+        
         # 格式化显示
-        styled_all_df = df_sorted.style.format({
-            '单日限额': format_limit,
+        styled_all_df = styled_all_df.format({
             '场内成交额': format_turnover
         })
         
