@@ -394,8 +394,8 @@ def main():
     if not is_free_five:
         st.warning(f"⚠️ **风险提示**：您的账户**未免五**。系统已自动在套利计算中扣除 **5 元**最低手续费，请确保单笔申购金额 {invest_amount} 元能覆盖成本。")
     
-    # 筛选机会
-    filtered_df = filter_opportunities(df, min_premium, min_turnover)
+    # 筛选机会（min_turnover 单位是万元，需要转换为元）
+    filtered_df = filter_opportunities(df, min_premium, min_turnover * 10000)
     
     # 计算预估利润
     fee = 0 if is_free_five else 5
