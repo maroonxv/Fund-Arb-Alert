@@ -94,7 +94,7 @@ def job():
             logger.info("发现机会，准备发送飞书通知...")
             send_feishu_message(final_msg)
         else:
-            logger.info("未发现溢价 > 10% 的套利机会，无需发送通知。")
+            logger.info("未发现溢价 > 5% 的套利机会，无需发送通知。")
             
     except Exception as e:
         logger.error(f"❌ 定时任务执行异常: {str(e)}")

@@ -3,10 +3,15 @@
 负责从集思录抓取数据并进行清洗和筛选
 """
 
+import os
 import requests
 import pandas as pd
 import time
 import logging
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -17,6 +22,57 @@ JISILU_HEADERS = {
     "Referer": "https://www.jisilu.cn/",
     "X-Requested-With": "XMLHttpRequest"
 }
+
+# 集思录登录地址
+JISILU_LOGIN_URL = "https://www.jisilu.cn/account/ajax/login_process/"
+
+# 全局 Session（模块级别复用）
+_session: requests.Session | None = None
+_logged_in: bool = False
+
+
+def _get_session() -> requests.Session:
+    """
+    获取已登录的 requests.Session。
+    首次调用时创建 Session 并尝试登录，后续复用。
+    """
+    global _session, _logged_in
+
+    if _session is not None:
+        return _session
+
+    _session = requests.Session()
+    _session.headers.update(JISILU_HEADERS)
+    _session.verify = False
+
+    account = os.getenv("jisilu_account")
+    password = os.getenv("jisilu_password")
+
+    if not account or not password:
+        logger.warning("⚠️ 未配置 jisilu_account / jisilu_password，将以未登录状态抓取数据")
+        return _session
+
+    try:
+        login_data = {
+            "user_name": account,
+            "password": password,
+            "net_auto_login": "1",
+            "return_url": "",
+        }
+        resp = _session.post(
+            JISILU_LOGIN_URL, data=login_data, timeout=10
+        )
+        result = resp.json()
+        if resp.status_code == 200 and result.get("err") == 0:
+            _logged_in = True
+            logger.info("✅ 集思录登录成功")
+        else:
+            err_msg = result.get("msg", "未知错误")
+            logger.error(f"❌ 集思录登录失败: {err_msg}")
+    except Exception as e:
+        logger.error(f"❌ 集思录登录异常: {str(e)}")
+
+    return _session
 
 # 筛选关键词配置
 KEYWORDS_US_EU = [
@@ -37,25 +93,26 @@ KEYWORDS_COMMODITY = [
     "商品", "资源", "抗通胀"
 ]
 
-PREMIUM_THRESHOLD = 10.0
+PREMIUM_THRESHOLD = 5.0
 
 
 def fetch_jisilu_data(url: str, description: str = "Data") -> list:
     """
     通用集思录 API 数据抓取函数。
-    发送 POST 请求，返回 rows 数组。
+    使用已登录的 Session 发送 POST 请求，返回 rows 数组。
     失败时返回空列表并记录日志。
     """
     try:
+        session = _get_session()
+
         ts = int(time.time() * 1000)
         full_url = f"{url}?___jsl=LST___t={ts}"
 
         params = {"rp": 100, "page": 1}
 
         logger.info(f"开始抓取 {description}: {url}")
-        resp = requests.post(
-            full_url, headers=JISILU_HEADERS, data=params,
-            verify=False, timeout=10
+        resp = session.post(
+            full_url, data=params, timeout=10
         )
 
         if resp.status_code == 200:
