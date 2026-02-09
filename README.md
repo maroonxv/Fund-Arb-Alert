@@ -1,623 +1,267 @@
-# LOF 基金套利监控系统 - 技术文档
+# LOF/QDII 基金套利监控系统
 
-## 一、系统概述
+> 基于集思录 API 的高溢价基金套利机会实时监控工具
 
-### 1.1 项目简介
-本系统是一个基于 Streamlit 的 Web 应用程序，用于实时监控中国市场 LOF 基金的套利机会，通过计算场内价格与基金净值的溢价率，帮助投资者发现"场外申购、场内卖出"的套利机会。
+## 项目简介
 
-### 1.2 核心功能
-- 实时获取 LOF 基金场内行情数据
-- 批量查询基金真实净值
-- 自动计算溢价率
-- 溢价率分级高亮显示（≥5%红色，2-5%黄色）
-- 支持参数化筛选
-- 数据缓存机制（按日期）
-- 多线程加速查询（3线程）
+本系统是一个轻量级的基金套利监控工具，通过集思录（Jisilu）API 获取 LOF 指数基金和 QDII 基金的实时溢价率数据，自动筛选溢价率超过 10% 的套利机会，并通过 Streamlit Web 界面展示和飞书 Webhook 推送通知。
 
-### 1.3 技术栈
-- **前端框架**: Streamlit 1.28+
-- **数据处理**: Pandas, NumPy
-- **数据源**: Akshare（东方财富）
-- **并发处理**: ThreadPoolExecutor
-- **数据持久化**: JSON 文件缓存
+### 核心功能
 
----
+- 📊 **实时数据获取**：从集思录 API 获取 LOF 指数、QDII 欧美、QDII 商品三类基金数据
+- 🔍 **智能筛选**：自动筛选溢价率 > 10% 的套利机会
+- 🌐 **Web 界面**：基于 Streamlit 的直观 Web 界面，支持三个分类 Tab 展示
+- 📱 **飞书通知**：每日 14:00 自动检测并推送高溢价机会到飞书群
+- 🔗 **快捷跳转**：提供东方财富行情和蛋卷基金详情的快捷链接
 
-## 二、系统架构
+### 数据源
 
-### 2.1 整体架构图
+- **集思录 (Jisilu)**：https://www.jisilu.cn/
+  - LOF 指数基金数据：`/data/lof/index_lof_list/`
+  - QDII 基金数据：`/data/qdii/qdii_list/`
 
-```mermaid
-%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#4a9eff','primaryTextColor':'#fff','lineColor':'#f39c12','background':'#1e1e1e','textColor':'#e0e0e0','nodeBorder':'#4a9eff'}}}%%
-graph TB
-    A[用户界面<br/>Streamlit] --> B[数据获取层]
-    B --> C[场内行情<br/>fund_lof_spot_em]
-    B --> D[净值数据<br/>fund_etf_fund_info_em]
-    B --> E[缓存系统<br/>JSON文件]
-    
-    A --> F[数据处理层]
-    F --> G[溢价率计算]
-    F --> H[数据筛选]
-    F --> I[高亮标记]
-    
-    A --> J[展示层]
-    J --> K[筛选结果Tab]
-    J --> L[全量数据Tab]
-    
-    E -.->|读取缓存| B
-    B -.->|写入缓存| E
-    
-    M[多线程池<br/>3 Workers] --> D
-    
-    style A fill:#4a9eff,color:#fff
-    style B fill:#e74c3c,color:#fff
-    style F fill:#2ecc71,color:#fff
-    style J fill:#f39c12,color:#fff
-    style M fill:#9b59b6,color:#fff
-```
+## 技术栈
 
-### 2.2 模块划分
+- **Python 3.10+**
+- **Web 框架**：Streamlit >= 1.28.0
+- **数据处理**：Pandas >= 1.5.0
+- **HTTP 请求**：Requests >= 2.28.0
+- **定时任务**：Schedule >= 1.2.0
+- **测试框架**：Pytest + Hypothesis（属性测试）
+- **环境变量**：python-dotenv >= 1.0.0
 
-| 模块 | 文件/函数 | 功能描述 |
-|------|----------|---------|
-| **缓存模块** | `load_nav_cache()`, `save_nav_cache()` | 读写日期缓存文件 |
-| **数据获取** | `get_lof_data()`, `fetch_single_nav()` | 获取场内行情和净值 |
-| **数据处理** | `calculate_premium_rate()`, `filter_opportunities()` | 计算溢价率和筛选 |
-| **展示渲染** | `highlight_premium_level()`, `format_turnover()` | 高亮和格式化 |
-| **主控制器** | `main()` | 主流程控制 |
+## 安装和运行
 
----
-
-## 三、数据流程
-
-### 3.1 数据流转图
-
-```mermaid
-%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#4a9eff','primaryTextColor':'#fff','lineColor':'#f39c12','background':'#1e1e1e','textColor':'#e0e0e0'}}}%%
-sequenceDiagram
-    participant U as 用户
-    participant UI as Streamlit界面
-    participant Cache as 缓存系统
-    participant API1 as 场内行情API
-    participant API2 as 净值API<br/>(多线程)
-    participant Proc as 数据处理
-    
-    U->>UI: 访问应用/刷新
-    UI->>API1: 获取LOF列表
-    API1-->>UI: 返回场内行情(390只)
-    
-    UI->>Cache: 检查今日缓存
-    alt 缓存命中
-        Cache-->>UI: 返回缓存净值
-    else 缓存未命中
-        UI->>API2: 3线程并发查询净值
-        loop 每只基金
-            API2->>API2: fund_etf_fund_info_em()
-        end
-        API2-->>UI: 返回净值数据
-        UI->>Cache: 保存到缓存
-    end
-    
-    UI->>Proc: 合并场内+净值
-    Proc->>Proc: 计算溢价率
-    Proc->>Proc: 筛选数据
-    Proc->>Proc: 应用高亮
-    Proc-->>UI: 返回处理结果
-    UI-->>U: 展示表格
-```
-
-### 3.2 缓存机制
-
-```mermaid
-%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#4a9eff','background':'#1e1e1e','textColor':'#e0e0e0'}}}%%
-flowchart LR
-    A[开始查询] --> B{检查缓存<br/>nav_cache_YYYYMMDD.json}
-    B -->|存在| C[加载缓存]
-    B -->|不存在| D[创建空字典]
-    
-    C --> E{比对基金代码}
-    D --> E
-    
-    E --> F[已缓存的基金]
-    E --> G[需查询的基金]
-    
-    G --> H[3线程查询]
-    H --> I[更新缓存字典]
-    
-    F --> J[合并数据]
-    I --> J
-    J --> K[保存缓存文件]
-    K --> L[返回完整数据]
-    
-    style B fill:#f39c12,color:#fff
-    style H fill:#9b59b6,color:#fff
-    style K fill:#2ecc71,color:#fff
-```
-
----
-
-## 四、核心逻辑
-
-### 4.1 主流程逻辑
-
-```mermaid
-%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#4a9eff','primaryTextColor':'#fff','lineColor':'#f39c12','background':'#1e1e1e','textColor':'#e0e0e0'}}}%%
-flowchart TD
-    Start([启动应用]) --> Init[初始化配置<br/>缓存目录/日志]
-    Init --> UI[渲染侧边栏参数]
-    UI --> GetData[获取LOF数据]
-    
-    GetData --> Step1[步骤1: 场内行情]
-    Step1 --> Step2[步骤2: 净值数据]
-    Step2 --> Step3[步骤3: 合并数据]
-    
-    Step3 --> Calc[计算溢价率]
-    Calc --> Filter[应用筛选条件]
-    Filter --> Sort[按溢价率排序]
-    
-    Sort --> Tab{Tab选择}
-    Tab -->|Tab1| ShowFiltered[展示筛选结果<br/>应用高亮]
-    Tab -->|Tab2| ShowAll[展示全量数据<br/>应用高亮]
-    
-    ShowFiltered --> Export1[导出CSV]
-    ShowAll --> Export2[导出CSV]
-    
-    Export1 --> End([结束])
-    Export2 --> End
-    
-    style Start fill:#2ecc71,color:#fff
-    style GetData fill:#e74c3c,color:#fff
-    style Calc fill:#f39c12,color:#fff
-    style End fill:#95a5a6,color:#fff
-```
-
-### 4.2 溢价率计算公式
-
-```python
-溢价率(%) = (场内价格 - 基金净值) / 基金净值 × 100
-```
-
-**示例：**
-- 场内价格：3.094 元
-- 基金净值：2.5706 元
-- 溢价率：(3.094 - 2.5706) / 2.5706 × 100 = **20.36%**
-
-### 4.3 高亮规则
-
-```mermaid
-%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#4a9eff','background':'#1e1e1e','textColor':'#e0e0e0'}}}%%
-flowchart LR
-    A[溢价率] --> B{判断}
-    B -->|≥ 5%| C[🟥 红色高亮<br/>鸡腿机会]
-    B -->|2-5%| D[🟡 黄色高亮<br/>中等机会]
-    B -->|< 2%| E[⚪ 无高亮]
-    
-    style C fill:#ffcccc,color:#d32f2f
-    style D fill:#fff9c4,color:#f57c00
-    style E fill:#f5f5f5,color:#666
-```
-
----
-
-## 五、关键函数说明
-
-### 5.1 数据获取函数
-
-#### `get_lof_data()`
-**功能**: 主数据获取函数，协调场内行情和净值数据的获取
-
-**流程**:
-1. 调用 `ak.fund_lof_spot_em()` 获取场内行情
-2. 检查当日缓存 `nav_cache_YYYYMMDD.json`
-3. 使用 3 线程并发查询未缓存的基金净值
-4. 合并场内行情和净值数据
-5. 返回完整 DataFrame
-
-**返回字段**:
-- 基金代码
-- 基金名称
-- 场内价格
-- 基金净值
-- 实时估值
-- 场内成交额
-
-#### `fetch_single_nav(fund_code, start_date, end_date)`
-**功能**: 单只基金净值查询（多线程调用）
-
-**参数**:
-- `fund_code`: 基金代码（如 "161226"）
-- `start_date`: 查询起始日期（格式 YYYYMMDD）
-- `end_date`: 查询结束日期（格式 YYYYMMDD）
-
-**返回**:
-```python
-{
-    '基金代码': '161226',
-    '基金净值': 2.5706,
-    '净值日期': '2026-01-15',
-    'success': True
-}
-```
-
-### 5.2 缓存函数
-
-#### `load_nav_cache(cache_date)`
-**功能**: 加载指定日期的净值缓存
-
-**缓存文件路径**: `lof_cache/nav_cache_20260116.json`
-
-**缓存结构**:
-```json
-{
-  "161226": {
-    "基金代码": "161226",
-    "基金净值": 2.5706,
-    "净值日期": "2026-01-15"
-  },
-  "160212": {
-    "基金代码": "160212",
-    "基金净值": 4.6528,
-    "净值日期": "2026-01-15"
-  }
-}
-```
-
-#### `save_nav_cache(cache_date, nav_dict)`
-**功能**: 保存净值缓存到 JSON 文件
-
-**注意事项**:
-- 确保数据类型可序列化（日期转字符串）
-- 使用 UTF-8 编码
-- 缩进 2 空格便于阅读
-
-### 5.3 数据处理函数
-
-#### `calculate_premium_rate(df)`
-**功能**: 计算溢价率并添加到 DataFrame
-
-```python
-df['溢价率(%)'] = ((df['场内价格'] - df['基金净值']) / df['基金净值'] * 100).round(2)
-```
-
-#### `filter_opportunities(df, min_premium, min_turnover)`
-**功能**: 根据用户参数筛选套利机会
-
-**筛选条件**:
-- 溢价率 > `min_premium`（默认 1.5%）
-- 场内成交额 > `min_turnover`（默认 50 万）
-
-#### `highlight_premium_level(row)`
-**功能**: 根据溢价率应用高亮样式
-
-**高亮规则**:
-```python
-if premium >= 5.0:
-    return 红色高亮
-elif premium >= 2.0:
-    return 黄色高亮
-else:
-    return 无高亮
-```
-
----
-
-## 六、性能优化
-
-### 6.1 多线程加速
-
-**问题**: 逐个查询 390 只基金净值耗时过长
-
-**解决方案**: 使用 `ThreadPoolExecutor` 3 线程并发
-
-```python
-with ThreadPoolExecutor(max_workers=3) as executor:
-    future_to_code = {
-        executor.submit(fetch_single_nav, code, start_date, end_date): code
-        for code in need_fetch_codes
-    }
-    for future in as_completed(future_to_code):
-        result = future.result()
-```
-
-**性能提升**: 理论加速 3 倍
-
-### 6.2 日期缓存
-
-**问题**: 每次刷新都重复查询相同数据
-
-**解决方案**: 按日期缓存，同一天只查询一次
-
-**缓存命中率**: 第二次及以后访问 100% 命中
-
-**缓存清理**: 用户手动删除 `lof_cache` 文件夹
-
----
-
-## 七、数据字典
-
-### 7.1 主数据表结构
-
-| 字段名 | 类型 | 说明 | 数据源 |
-|--------|------|------|--------|
-| 基金代码 | str | 6位代码，如 161226 | 场内行情API |
-| 基金名称 | str | 如"国投白银LOF" | 场内行情API |
-| 场内价格 | float | 实时交易价格（元） | 场内行情API |
-| 基金净值 | float | 最新公布净值（元） | 净值API + 缓存 |
-| 实时估值 | float | 盘中估算（= 净值） | 计算字段 |
-| 场内成交额 | float | 当日成交额（元） | 场内行情API |
-| 溢价率(%) | float | 计算得出 | 计算字段 |
-
-### 7.2 筛选参数
-
-| 参数名 | 类型 | 默认值 | 范围 | 说明 |
-|--------|------|--------|------|------|
-| 最小溢价率 | float | 1.5% | 0-10% | 过滤低溢价品种 |
-| 最小成交额 | int | 50万 | 0-500万 | 保证流动性 |
-
----
-
-## 八、用户界面
-
-### 8.1 侧边栏参数
-
-- **筛选参数设置**
-  - 最小溢价率滑块（0-10%，步长0.1%）
-  - 最小成交额滑块（0-500万，步长10万）
-- **使用说明**
-  - 提示：申购状态和限额为模拟数据
-
-### 8.2 主界面布局
-
-```
-┌─────────────────────────────────────────┐
-│ 💰 LOF 基金套利监控系统                  │
-│ 场外申购、场内卖出套利机会实时监控        │
-├─────────────────────────────────────────┤
-│ 🔄 刷新数据                              │
-├─────────────────────────────────────────┤
-│ 📈 数据概览                              │
-│ [总LOF] [符合条件] [🍗鸡腿] [最高溢价]   │
-├─────────────────────────────────────────┤
-│ [📋 套利机会列表] [📊 全量LOF数据]        │
-│ ┌─────────────────────────────────────┐ │
-│ │ 🟥 红色 = 高溢价(≥5%)                │ │
-│ │ 🟡 黄色 = 中等溢价(2-5%)             │ │
-│ │                                     │ │
-│ │ [数据表格 - 600px高度]               │ │
-│ │                                     │ │
-│ └─────────────────────────────────────┘ │
-│ 📥 导出为 CSV                            │
-└─────────────────────────────────────────┘
-```
-
----
-
-## 九、错误处理
-
-### 9.1 异常捕获
-
-| 异常类型 | 处理方式 | 用户提示 |
-|---------|---------|---------|
-| Akshare未安装 | 返回None | ❌ Akshare未安装 |
-| API调用失败 | 记录日志，继续处理 | 部分数据获取失败 |
-| 缓存读写失败 | 降级到全量查询 | ⚠️ 缓存读取失败 |
-| 数据为空 | 返回None | ❌ 无法获取数据 |
-
-### 9.2 日志级别
-
-```python
-logger.info()    # 正常流程
-logger.warning() # 警告（如缓存失败、部分基金查询失败）
-logger.error()   # 错误（如API失败、数据为空）
-```
-
----
-
-## 十、部署说明
-
-### 10.1 环境要求
+### 1. 环境准备
 
 ```bash
-# 使用 Conda 创建环境
-conda create -n lof_jt python=3.10 -y
-conda activate lof_jt
+# 克隆项目
+git clone <repository-url>
+cd <project-directory>
+
+# 创建虚拟环境（推荐）
+python -m venv .venv
+
+# 激活虚拟环境
+# Windows:
+.venv\Scripts\activate
+# Linux/Mac:
+source .venv/bin/activate
 
 # 安装依赖
 pip install -r requirements.txt
 ```
 
-### 10.2 运行方式
+### 2. 配置环境变量
+
+创建 `.env` 文件（可选，仅用于飞书通知）：
 
 ```bash
-# 开发模式
+# 飞书 Webhook URL（可选）
+FEISHU_BOT_HOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-url
+```
+
+### 3. 运行 Web 界面
+
+```bash
 streamlit run app.py
-
-# 指定端口
-streamlit run app.py --server.port 8888
 ```
 
-### 10.3 目录结构
+访问 http://localhost:8501 查看监控界面。
 
-```
-lof_jt/
-├── app.py                  # 主程序
-├── requirements.txt        # 依赖清单
-├── README.md              # 使用文档
-├── 技术文档.md             # 本文档
-└── lof_cache/             # 缓存目录
-    └── nav_cache_20260116.json  # 日期缓存
+### 4. 运行后台定时任务（可选）
+
+```bash
+python background_task.py
 ```
 
----
+后台任务将在每日 14:00 自动检测套利机会并发送飞书通知。
 
-## 十一、未来优化方向
-
-### 11.1 功能增强
-- [ ] 增加历史溢价率走势图
-- [ ] 支持邮件/微信实时提醒
-- [ ] 增加收益计算器
-- [ ] 支持自定义高亮阈值
-
-### 11.2 性能优化
-- [ ] 增加线程池大小配置
-- [ ] 支持增量更新缓存
-- [ ] 添加数据库持久化
-- [ ] 优化大数据量渲染
-
-### 11.3 数据源
-- [ ] 集成集思录 API
-- [ ] 支持多数据源切换
-- [ ] 获取真实申购状态和限额
-
----
-
-## 十二、常见问题
-
-### Q1: 为什么没有申购状态和单日限额？
-**A**: 因为 Akshare 的 LOF 接口不提供这些数据，之前使用的随机模拟数据会误导用户，所以移除了。
-
-### Q2: 缓存文件在哪里？
-**A**: `lof_cache/nav_cache_YYYYMMDD.json`，按日期命名。
-
-### Q3: 如何清空缓存？
-**A**: 直接删除 `lof_cache` 文件夹即可。
-
-### Q4: 为什么第一次运行很慢？
-**A**: 需要查询 390 只基金的净值，即使用 3 线程也需要一定时间。第二次访问会直接读缓存，速度很快。
-
-### Q5: 溢价率为负数是什么意思？
-**A**: 表示场内价格低于净值，属于折价，不适合"场外申购、场内卖出"套利。
-
----
-
-## 附录
-
-### A. 关键依赖版本
+## 项目结构
 
 ```
-streamlit >= 1.28.0
-pandas >= 1.5.0
-numpy >= 1.23.0
-akshare >= 1.11.0
+project/
+├── app.py                      # Streamlit Web 界面主程序
+├── data_fetcher.py             # 数据获取与处理模块
+├── background_task.py          # 后台定时任务 + 飞书通知
+├── requirements.txt            # Python 依赖清单
+├── .env                        # 环境变量配置（需自行创建）
+├── .gitignore                  # Git 忽略文件配置
+├── README.md                   # 项目说明文档
+├── test_background_task.py     # 后台任务测试
+├── test_checkpoint.py          # 检查点测试
+└── .kiro/                      # Kiro 规范文档
+    └── specs/
+        └── jisilu-fund-monitor/
+            ├── requirements.md  # 需求文档
+            ├── design.md        # 设计文档
+            └── tasks.md         # 任务清单
 ```
 
-### B. 参考链接
+## 系统架构
 
-- [Streamlit 文档](https://docs.streamlit.io/)
-- [Akshare 文档](https://akshare.akfamily.xyz/)
-- [Pandas 文档](https://pandas.pydata.org/)
-
----
-
-**文档版本**: v1.0  
-**最后更新**: 2026-01-16  
-**维护者**: 大彩电
-
----
-
-## 附录 C：AI 项目重现提示词
-
-如果你希望在新的 AI 对话中重新生成本项目，可以使用以下提示词：
-
----
-
-### 🤖 完整提示词
+### 架构图
 
 ```
-**角色：** 你是一位精通 Python 金融数据抓取和 Web 开发的专家级程序员。
-
-**目标：** 我要开发一个 Python Web 应用程序（使用 Streamlit 框架），用于实时监控中国市场的 LOF 基金（上市型开放式基金），寻找"场外申购、场内卖出"的套利机会。
-
-**用户背景：**
-我是"免五"用户（免除证券交易最低5元佣金限制）。我关注高溢价的套利机会，因为我的交易成本极低。
-
-**核心功能需求：**
-
-1. **数据获取**
-   - 使用 Akshare 库的 `fund_lof_spot_em()` 获取 LOF 场内实时行情（390只左右）
-   - 使用 `fund_etf_fund_info_em(fund_code)` 批量获取每只基金的真实净值
-   - 实现**3线程并发查询**净值数据，提升性能
-   - 实现**按日期缓存**机制：缓存文件命名格式 `lof_cache/nav_cache_YYYYMMDD.json`，同一天只查询一次
-
-2. **数据处理**
-   - 计算溢价率：`(场内价格 - 基金净值) / 基金净值 × 100%`
-   - 筛选条件（用户可调）：
-     * 最小溢价率（默认 1.5%）
-     * 最小成交额（默认 50万）
-   - 按溢价率降序排序
-
-3. **UI/UX 需求**
-   - 使用 Streamlit 构建界面
-   - 侧边栏：参数设置（溢价率和成交额滑块）
-   - 主界面：
-     * 数据概览卡片：总LOF数量、符合条件、🍗鸡腿机会（溢价≥5%）、最高溢价率
-     * **两个Tab**：
-       - Tab1: 筛选后的套利机会列表
-       - Tab2: 全量LOF数据（所有390只）
-   - **溢价率分级高亮**：
-     * 🟥 红色：溢价 ≥ 5%（鸡腿机会）
-     * 🟡 黄色：溢价 2-5%（中等机会）
-     * ⚪ 无色：溢价 < 2%
-   - 每个Tab都有独立的CSV导出按钮
-
-4. **技术栈**
-   - Python 3.10+
-   - Streamlit >= 1.28.0
-   - Pandas, NumPy
-   - Akshare >= 1.11.0
-   - concurrent.futures (ThreadPoolExecutor)
-   - json, logging
-
-5. **关键实现细节**
-   - 缓存保存时确保数据类型可序列化（日期转字符串）
-   - 使用 `ThreadPoolExecutor(max_workers=3)` 并发查询净值
-   - 高亮函数命名：`highlight_premium_level(row)`
-   - 数据字段：基金代码、基金名称、场内价格、基金净值、实时估值、场内成交额、溢价率(%)
-   - **不要**生成模拟的"申购状态"和"单日限额"字段（因为无法获取真实数据）
-   - 缓存目录：`lof_cache/`，自动创建，用户可手动删除清空缓存
-
-6. **日志要求**
-   - 配置 logging，输出到控制台
-   - 关键步骤：场内行情获取、缓存检查、多线程查询、数据合并等都要有日志
-   - 日志级别：INFO（正常流程）、WARNING（部分失败）、ERROR（严重错误）
-
-7. **错误处理**
-   - Akshare 未安装时直接报错，不使用Mock数据
-   - API调用失败时记录日志，继续处理其他基金
-   - 数据获取失败时返回 None，在 UI 显示明确错误信息
-
-8. **性能优化**
-   - 首次查询390只基金约需2-3分钟（3线程）
-   - 第二次访问直接读缓存，几秒内完成
-   - 进度条显示：`正在获取基金净值... (150/390)`
-
-**输出要求：**
-请提供完整的、可运行的 Python 代码（`app.py`），包含详细注释。另外提供 `requirements.txt` 依赖清单。
-
-**特别强调：**
-- 不要使用Mock数据，真实数据获取失败就明确告诉用户
-- 缓存机制必须按日期（YYYYMMDD）命名
-- 必须使用3线程并发查询
-- 溢价率高亮分级必须清晰（红/黄/无色）
-- Tab必须包含全量数据展示，不只是筛选结果
+┌─────────────────────────────────────────────────────────┐
+│                    用户界面层                            │
+│  ┌──────────────────┐      ┌──────────────────┐        │
+│  │  Streamlit Web   │      │  飞书 Webhook    │        │
+│  │    (app.py)      │      │ (background_task)│        │
+│  └──────────────────┘      └──────────────────┘        │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│                  业务逻辑层                              │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │         data_fetcher.py (数据获取与处理)          │  │
+│  │  • fetch_jisilu_data()    - API 请求             │  │
+│  │  • process_jisilu_rows()  - 数据解析             │  │
+│  │  • filter_by_premium()    - 溢价率筛选           │  │
+│  │  • filter_by_keywords_and_premium() - 关键词筛选 │  │
+│  │  • get_market_opportunities() - 统一入口         │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│                    数据源层                              │
+│  ┌──────────────────┐      ┌──────────────────┐        │
+│  │  集思录 LOF API  │      │  集思录 QDII API │        │
+│  │  index_lof_list  │      │    qdii_list     │        │
+│  └──────────────────┘      └──────────────────┘        │
+└─────────────────────────────────────────────────────────┘
 ```
 
+### 数据流程
+
+1. **数据获取**：通过 HTTP POST 请求从集思录 API 获取原始 JSON 数据
+2. **数据解析**：提取 `fund_id`、`fund_nm`、`price`、`discount_rt`、`apply_status` 等字段
+3. **数据清洗**：将溢价率字符串（如 "41.74%"）转换为浮点数
+4. **数据筛选**：
+   - LOF 指数：溢价率 > 10%
+   - QDII 欧美：名称包含关键词（标普、纳指等）且溢价率 > 10%
+   - QDII 商品：名称包含关键词（油、金、银等）且溢价率 > 10%
+5. **数据展示**：通过 Streamlit 界面或飞书消息展示结果
+
+## 使用说明
+
+### Web 界面
+
+1. **三个 Tab 分类展示**：
+   - 📈 LOF 指数 (>10%)：国内上市的指数型 LOF 基金
+   - 🌍 QDII 欧美 (>10%)：投资美股、欧股等的 QDII 基金
+   - 🛢️ QDII 商品 (>10%)：投资油气、黄金等商品的 QDII 基金
+
+2. **数据刷新**：点击侧边栏的"🔄 刷新数据"按钮清除缓存并重新获取
+
+3. **快捷链接**：
+   - 行情链接：跳转到东方财富查看实时行情
+   - 详情链接：跳转到蛋卷基金查看基金详情
+
+### 飞书通知
+
+配置 `.env` 文件中的 `FEISHU_BOT_HOOK_URL` 后，后台任务会在每日 14:00 自动检测并推送通知。
+
+通知内容示例：
+```
+💰 基金高溢价套利提醒 (14:00)
+--------------------
+📈 【LOF指数】发现 3 个机会:
+- 石油基金LOF (160416): 溢价 41.74
+- 国投白银LOF (161226): 溢价 20.36
+...
+
+🌍 【QDII欧美】发现 2 个机会:
+- 纳指ETF (513100): 溢价 15.23
+...
+```
+
+## 筛选关键词配置
+
+### QDII 欧美关键词
+```python
+["标普", "纳指", "纳斯达克", "道琼斯", "德国", "法国", 
+ "日经", "美国", "欧洲", "海外"]
+```
+
+### QDII 商品关键词
+```python
+# 能源类
+["油", "原油", "石油", "油气", "能源"]
+# 贵金属类
+["金", "银", "黄金", "白银"]
+# 工业金属类
+["铜", "有色"]
+# 农产品类
+["豆", "糖", "棉"]
+# 综合类
+["商品", "资源", "抗通胀"]
+```
+
+## 测试
+
+项目使用 pytest + hypothesis 进行测试：
+
+```bash
+# 运行所有测试
+pytest
+
+# 运行特定测试文件
+pytest test_background_task.py
+
+# 查看测试覆盖率
+pytest --cov=. --cov-report=html
+```
+
+## 错误处理
+
+| 场景 | 处理方式 | 用户影响 |
+|------|---------|---------|
+| API 请求超时 (10s) | 记录日志，返回空列表 | 对应 Tab 显示"无数据" |
+| API 返回非 200 | 记录日志，返回空列表 | 对应 Tab 显示"无数据" |
+| JSON 解析失败 | 记录日志，返回空列表 | 对应 Tab 显示"无数据" |
+| discount_rt 格式异常 | 默认为 0.0 | 该基金溢价率显示为 0 |
+| 飞书 Webhook 未配置 | 记录错误日志，跳过发送 | 不影响 Web 界面 |
+| 飞书消息发送失败 | 记录错误日志 | 不影响 Web 界面 |
+
+## 常见问题
+
+### Q1: 为什么有些基金的溢价率显示为 0？
+**A**: 可能是集思录 API 返回的 `discount_rt` 字段格式异常或缺失，系统会默认设置为 0.0。
+
+### Q2: 如何修改溢价率阈值？
+**A**: 在 `data_fetcher.py` 中修改 `PREMIUM_THRESHOLD` 常量（默认 10.0）。
+
+### Q3: 飞书通知没有收到消息？
+**A**: 请检查：
+1. `.env` 文件中的 `FEISHU_BOT_HOOK_URL` 是否配置正确
+2. 后台任务 `background_task.py` 是否正在运行
+3. 当前是否有溢价率 > 10% 的机会（无机会时不发送通知）
+
+### Q4: 如何添加新的筛选关键词？
+**A**: 在 `data_fetcher.py` 中修改 `KEYWORDS_US_EU` 或 `KEYWORDS_COMMODITY` 列表。
+
+## 开发说明
+
+### 添加新的数据源
+
+1. 在 `data_fetcher.py` 中添加新的 `fetch_xxx_data()` 函数
+2. 在 `get_market_opportunities()` 中调用并返回结果
+3. 在 `app.py` 中添加新的 Tab 展示
+
+### 修改筛选逻辑
+
+在 `data_fetcher.py` 中修改 `filter_by_premium()` 或 `filter_by_keywords_and_premium()` 函数。
+
+## 许可证
+
+本项目仅供学习和研究使用，请勿用于商业用途。
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
 ---
 
-### 📝 使用说明
-
-1. 将上述提示词完整复制
-2. 在新的 AI 对话中粘贴并发送
-3. AI 将生成与本项目功能一致的完整代码
-
-### ⚠️ 注意事项
-
-- 提示词中已包含所有核心需求，但你可以根据实际情况微调参数
-- 如果AI生成的代码有细节差异，可以追加具体要求进行调整
-- 建议先在测试环境验证生成的代码，确认功能完整性
-
----
-
-**文档版本**: v1.0  
-**最后更新**: 2026-01-16  
-**维护者**: 大彩电
+**最后更新**: 2026-02-09  
+**版本**: v2.0 (集思录 API 版本)
